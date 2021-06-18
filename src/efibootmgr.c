@@ -621,6 +621,40 @@ delete_var(const char *prefix, uint16_t num)
 	return 0;
 }
 
+static int
+delete_label(const char *prefix, const unsigned char *label)
+{
+	list_t *pos;
+	var_entry_t *boot;
+	int num_deleted = 0;
+	int rc;
+	efi_load_option *load_option;
+	const unsigned char *desc;
+
+	list_for_each(pos, &entry_list) {
+		boot = list_entry(pos, var_entry_t, list);
+		load_option = (efi_load_option *)boot->data;
+		desc = efi_loadopt_desc(load_option, boot->data_size);
+
+		if (strcmp((char *)desc, (char *)label) == 0) {
+			rc = delete_var(prefix,boot->num);
+			if (rc < 0) {
+				efi_error("Could not delete %s%04x", prefix, boot->num);
+				return rc;
+			} else {
+				num_deleted++;
+			}
+		}
+	}
+
+	if (num_deleted == 0) {
+		efi_error("Could not delete %s", label);
+		return -1;
+	}
+
+	return 0;
+}
+
 static void
 set_var_nums(const char *prefix, list_t *list)
 {
@@ -996,6 +1030,7 @@ show_var_path(efi_load_option *load_option, size_t boot_data_size)
 				      + strlen(a)
 				      + strlen(")"));
 		if (!text_path) {
+			free(a);
 			warning("Could not parse optional data");
 			return;
 		}
@@ -1003,7 +1038,7 @@ show_var_path(efi_load_option *load_option, size_t boot_data_size)
 
 		b = stpcpy(text_path, " File(.");
 		b = stpcpy(b, a);
-		b = stpcpy(b, ")");
+		stpcpy(b, ")");
 		free(a);
 	} else if (opts.unicode) {
 		text_path = ucs2_to_utf8((uint16_t*)optional_data,
@@ -1054,14 +1089,14 @@ show_var_path(efi_load_option *load_option, size_t boot_data_size)
 		rc = efidp_next_node(node, &next);
 		if (rc < 0) {
 			warning("Could not iterate device path");
-                        return;
-                }
+			return;
+		}
 
 		sz = efidp_node_size(node);
 		if (sz <= 0) {
 			warning("Could not iterate device path");
-                        return;
-                }
+			return;
+		}
 
 		for (ssize_t j = 0; j < sz; j++)
 			printf("%02hhx%s", data[j], j == sz - 1 ? "" : " ");
@@ -1467,15 +1502,13 @@ parse_opts(int argc, char **argv)
 			{0, 0, 0, 0}
 		};
 
-		c = getopt_long (argc, argv,
-				 "AaBb:cCDd:e:E:fFgH:i:l:L:M:m:n:No:Op:qt:TuU:v::Vw"
-				 "@:hry",
-				 long_options, &option_index);
+		c = getopt_long(argc, argv,
+				"AaBb:cCDd:e:E:fFgH:i:l:L:M:m:n:No:Op:qt:TuU:v::Vw@:hry",
+				long_options, &option_index);
 		if (c == -1)
 			break;
 
-		switch (c)
-		{
+		switch (c) {
 		case '@':
 			opts.extra_opts_file = optarg;
 			break;
@@ -1491,6 +1524,13 @@ parse_opts(int argc, char **argv)
 		case 'b': {
 			char *endptr = NULL;
 			unsigned long result;
+
+			if (!optarg) {
+				errorx(29, "--%s requires an argument",
+				       long_options[option_index]);
+				break;
+			}
+
 			result = strtoul(optarg, &endptr, 16);
 			if ((result == ULONG_MAX && errno == ERANGE) ||
 					(endptr && *endptr != '\0')) {
@@ -1573,9 +1613,18 @@ parse_opts(int argc, char **argv)
 			break;
 		case 'L':
 			opts.label = (unsigned char *)optarg;
+			opts.explicit_label = 1;
 			break;
 		case 'm':
+
+			if (!optarg) {
+				errorx(33, "--%s requires an argument",
+				       long_options[option_index]);
+				break;
+			}
+
 			opts.set_mirror_lo = 1;
+
 			switch (optarg[0]) {
 			case '1': case 'y': case 't':
 				opts.below4g = 1;
@@ -1604,6 +1653,13 @@ parse_opts(int argc, char **argv)
 		case 'n': {
 			char *endptr = NULL;
 			unsigned long result;
+
+			if (!optarg) {
+				errorx(36, "--%s requires an argument",
+				       long_options[option_index]);
+				break;
+			}
+
 			result = strtoul(optarg, &endptr, 16);
 			if ((result == ULONG_MAX && errno == ERANGE) ||
 					(endptr && *endptr != '\0')) {
@@ -1770,13 +1826,19 @@ main(int argc, char **argv)
 	set_var_nums(prefices[mode], &entry_list);
 
 	if (opts.delete) {
-		if (opts.num == -1)
-			errorx(3, "You must specify an entry to delete "
-				"(see the -b option).");
-		else {
-			ret = delete_var(prefices[mode], opts.num);
-			if (ret < 0)
-				error(15, "Could not delete variable");
+		if (opts.num == -1 && opts.explicit_label == 0) {
+			errorx(3,
+			       "You must specify an entry to delete (see the -b option or -L option).");
+		} else {
+			if (opts.num != -1) {
+				ret = delete_var(prefices[mode], opts.num);
+				if (ret < 0)
+					error(15, "Could not delete variable");
+			} else {
+				ret = delete_label(prefices[mode], opts.label);
+				if (ret < 0)
+					errorx(15, "Could not delete variable");
+			}
 		}
 	}
 
